@@ -18,6 +18,7 @@ export type ExtractedChannel = {
 	friendCount: number;
 	consult: boolean;
 	keyword: string;
+	address: string;
 };
 
 export type Delays = {

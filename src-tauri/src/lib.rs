@@ -32,6 +32,7 @@ pub struct ChannelDto {
     pub friend_count: i64,
     pub consult: bool,
     pub keyword: String,
+    pub address: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +261,7 @@ async fn extract_inner(
                         friend_count: ch.friend_count,
                         consult: ch.consult,
                         keyword: kw.clone(),
+                        address: ch.location_address.clone(),
                     });
                     by_id.entry(id).or_insert(ch);
                 }

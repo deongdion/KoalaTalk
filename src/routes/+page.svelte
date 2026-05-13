@@ -80,6 +80,10 @@
 	let extracting = $state(false);
 	let running = $state(false);
 
+	// address-based filter (applied to `extracted` on demand)
+	let addressKeywords = $state<string[]>([]);
+	let addressDraft = $state('');
+
 	// logical selection (don't iterate 10k items on toggle-all)
 	let selectMode = $state<'all' | 'manual'>('manual');
 	let excludedSet = $state<Set<string>>(new Set());
@@ -328,6 +332,47 @@
 		excludedSet = new Set();
 	}
 
+	// ─── address filter ──────────────────────────────────────────────
+	function addAddressKeyword() {
+		const v = addressDraft.trim();
+		if (!v || addressKeywords.includes(v)) {
+			addressDraft = '';
+			return;
+		}
+		addressKeywords = [...addressKeywords, v];
+		addressDraft = '';
+	}
+	function removeAddressKeyword(k: string) {
+		addressKeywords = addressKeywords.filter((x) => x !== k);
+	}
+	// A keyword may contain whitespace — all whitespace-separated tokens
+	// must appear in the address (AND). Multiple keywords are OR'd together.
+	// e.g. "부산 동구" matches "부산광역시 동구 ..." but not "서울특별시 동구 ...".
+	function matchesAddressKeyword(address: string, keyword: string): boolean {
+		if (!address) return false;
+		const tokens = keyword.split(/\s+/).filter(Boolean);
+		if (tokens.length === 0) return false;
+		return tokens.every((t) => address.includes(t));
+	}
+	function applyAddressFilter() {
+		const needles = addressKeywords.map((k) => k.trim()).filter(Boolean);
+		if (needles.length === 0) return;
+		extracted = extracted.filter((c) =>
+			needles.some((n) => matchesAddressKeyword(c.address, n))
+		);
+		selectMode = 'manual';
+		includedSet = new Set();
+		excludedSet = new Set();
+	}
+	let addressFilterPreviewCount = $derived.by(() => {
+		const needles = addressKeywords.map((k) => k.trim()).filter(Boolean);
+		if (needles.length === 0) return 0;
+		return extracted.reduce(
+			(n, c) => n + (needles.some((q) => matchesAddressKeyword(c.address, q)) ? 1 : 0),
+			0
+		);
+	});
+
 	// ─── derived ─────────────────────────────────────────────────────
 	let chattableCount = $derived(extracted.reduce((n, c) => n + (c.consult ? 1 : 0), 0));
 	let selectedCount = $derived(
@@ -352,7 +397,7 @@
 	);
 
 	// ─── virtualization (fixed-height windowed list) ─────────────────
-	const ITEM_H = 60; // px
+	const ITEM_H = 72; // px — 3 lines (title / encoded-id+meta / address)
 	const VIEWPORT_H = 384; // h-96
 	const BUFFER = 6;
 	let scrollTop = $state(0);
@@ -643,6 +688,65 @@
 						</div>
 
 						{#if extracted.length > 0}
+							<div class="border-t px-6 py-3">
+								<div class="mb-2 flex items-center justify-between gap-2">
+									<span class="text-[11px] font-medium text-muted-foreground">
+										주소 필터 — 키워드가 주소에 포함된 채널만 남깁니다 (한 키워드 안 공백은 AND, 예: "부산 동구")
+									</span>
+									<button
+										type="button"
+										onclick={applyAddressFilter}
+										disabled={addressKeywords.length === 0}
+										class="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary transition-colors enabled:hover:bg-primary/10 disabled:opacity-40"
+									>
+										<Trash2 class="size-3" />
+										정리
+										{#if addressKeywords.length > 0}
+											({fmtCount(addressFilterPreviewCount)} 유지 · {fmtCount(
+												extracted.length - addressFilterPreviewCount
+											)} 제거)
+										{/if}
+									</button>
+								</div>
+								<div
+									class="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-transparent p-2 transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30"
+								>
+									{#each addressKeywords as k (k)}
+										<span
+											class="inline-flex items-center gap-1 rounded-md bg-secondary py-1 pl-2 pr-1 text-xs text-secondary-foreground"
+										>
+											{k}
+											<button
+												type="button"
+												onclick={() => removeAddressKeyword(k)}
+												class="flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+												aria-label="{k} 제거"
+											>
+												<X class="size-3" />
+											</button>
+										</span>
+									{/each}
+									<input
+										bind:value={addressDraft}
+										onkeydown={(e) => {
+											if (e.key === 'Enter') {
+												e.preventDefault();
+												addAddressKeyword();
+											} else if (
+												e.key === 'Backspace' &&
+												!addressDraft &&
+												addressKeywords.length
+											) {
+												addressKeywords = addressKeywords.slice(0, -1);
+											}
+										}}
+										placeholder={addressKeywords.length === 0
+											? '예: 서울, 강남구, 부산 동구 — Enter 로 추가 (공백 = AND)'
+											: '추가...'}
+										class="min-w-[120px] flex-1 bg-transparent px-1.5 py-0.5 text-xs outline-none placeholder:text-muted-foreground/70"
+									/>
+								</div>
+							</div>
 							<div
 								onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
 								class="relative h-96 overflow-y-auto border-t"
@@ -680,6 +784,9 @@
 												</div>
 												<p class="truncate text-[11px] text-muted-foreground">
 													{ch.encodedId} · 친구 {fmtCount(ch.friendCount)} · #{ch.keyword}
+												</p>
+												<p class="truncate text-[11px] text-muted-foreground/80">
+													{ch.address || '주소 없음'}
 												</p>
 											</div>
 											<button

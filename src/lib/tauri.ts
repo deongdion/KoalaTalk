@@ -37,7 +37,13 @@ export async function extractChannels(
 				imageUrl: '',
 				friendCount: Math.floor(Math.random() * 50_000),
 				consult: Math.random() > 0.3,
-				keyword: kw
+				keyword: kw,
+				address: [
+					'서울 강남구 테헤란로 123',
+					'서울 마포구 양화로 45',
+					'경기 성남시 분당구 판교역로 8',
+					''
+				][i]
 			}))
 		);
 		if (!dedupe) return items;
