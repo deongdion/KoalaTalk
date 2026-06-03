@@ -45,11 +45,12 @@ mod imp {
         PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
+        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, GetForegroundWindow, GetWindow, GetWindowThreadProcessId,
-        PostMessageW, SendMessageW, SetForegroundWindow, GW_CHILD, WM_CLOSE, WM_DROPFILES,
+        BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow,
+        GetWindow, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SendMessageW,
+        SetForegroundWindow, ShowWindow, GW_CHILD, SW_RESTORE, WM_CLOSE, WM_DROPFILES,
         WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
     };
 
@@ -294,17 +295,43 @@ mod imp {
         Ok(())
     }
 
-    fn paste_and_send(hwnd: HWND, input_box: HWND, wait_after_paste: f32, wait_after_send: f32) {
-        unsafe {
-            let cur_tid = GetCurrentThreadId();
-            let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
-            AttachThreadInput(cur_tid, tgt_tid, 1);
-            SetForegroundWindow(hwnd);
-            SetFocus(input_box);
-            AttachThreadInput(cur_tid, tgt_tid, 0);
-        }
-        thread::sleep(Duration::from_millis(100));
+    /// Aggressively bring `hwnd` to the foreground and set keyboard focus
+    /// on `target`.  Retries once if the first attempt fails.
+    fn force_foreground(hwnd: HWND, target: HWND) {
+        for attempt in 0..2 {
+            unsafe {
+                // Alt-key trick: Windows lets a thread call SetForegroundWindow
+                // only while processing input — a synthetic Alt press satisfies
+                // that requirement.
+                keybd_event(VK_MENU as u8, 0, 0, 0);
+                keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
 
+                ShowWindow(hwnd, SW_RESTORE);
+                BringWindowToTop(hwnd);
+
+                let cur_tid = GetCurrentThreadId();
+                let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
+                AttachThreadInput(cur_tid, tgt_tid, 1);
+                SetForegroundWindow(hwnd);
+                SetFocus(target);
+                AttachThreadInput(cur_tid, tgt_tid, 0);
+            }
+            thread::sleep(Duration::from_millis(150));
+
+            // Verify
+            let fg = unsafe { GetForegroundWindow() };
+            if fg == hwnd {
+                return;
+            }
+            if attempt == 0 {
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+
+    /// Ctrl+V then Enter.  Assumes the chatroom already has foreground focus
+    /// (caller must have called `force_foreground` once before the loop).
+    fn paste_and_send(wait_after_paste: f32, wait_after_send: f32) {
         unsafe {
             keybd_event(VK_CONTROL as u8, 0, 0, 0);
             keybd_event(b'V', 0, 0, 0);
@@ -322,8 +349,71 @@ mod imp {
         thread::sleep(Duration::from_secs_f32(wait_after_send));
     }
 
+    fn pid_of(hwnd: HWND) -> u32 {
+        let mut pid: u32 = 0;
+        if hwnd != 0 {
+            unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        }
+        pid
+    }
+
+    /// Returns true if `hwnd` belongs to the same process as `ref_hwnd`.
+    fn same_process(hwnd: HWND, ref_hwnd: HWND) -> bool {
+        let a = pid_of(hwnd);
+        let b = pid_of(ref_hwnd);
+        a != 0 && a == b
+    }
+
+    /// Collect all visible top-level windows belonging to `target_pid`.
+    fn enum_windows_for_pid(target_pid: u32) -> Vec<HWND> {
+        struct Ctx {
+            pid: u32,
+            out: Vec<HWND>,
+        }
+        unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> i32 {
+            let ctx = &mut *(lparam as *mut Ctx);
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == ctx.pid && IsWindowVisible(hwnd) != 0 {
+                ctx.out.push(hwnd);
+            }
+            1 // continue
+        }
+        let mut ctx = Ctx { pid: target_pid, out: Vec::new() };
+        unsafe { EnumWindows(Some(cb), &mut ctx as *mut Ctx as LPARAM) };
+        ctx.out
+    }
+
+    /// Find a KakaoTalk chatroom window that appeared after a search.
+    /// A chatroom is identified as a visible top-level window (same process)
+    /// that contains a RICHEDIT50W child (the chat input box) and is not
+    /// the main KakaoTalk window.
+    fn find_chatroom_hwnd(kt_hwnd: HWND) -> HWND {
+        let pid = pid_of(kt_hwnd);
+        if pid == 0 {
+            return 0;
+        }
+        let windows = enum_windows_for_pid(pid);
+        for hwnd in windows {
+            if hwnd == kt_hwnd {
+                continue;
+            }
+            let rich = find_window_ex(hwnd, 0, Some("RICHEDIT50W"), None);
+            if rich != 0 {
+                return hwnd;
+            }
+        }
+        0
+    }
+
     fn cleanup(search_box: HWND, kt_hwnd: HWND, chatroom_hwnd: HWND) {
-        if chatroom_hwnd != 0 && chatroom_hwnd != kt_hwnd {
+        // Only close the chatroom if it is a separate window that belongs to the
+        // same KakaoTalk process.  This prevents accidentally sending WM_CLOSE to
+        // the KoalaTalk (Tauri) window or any other unrelated window.
+        if chatroom_hwnd != 0
+            && chatroom_hwnd != kt_hwnd
+            && same_process(chatroom_hwnd, kt_hwnd)
+        {
             unsafe { PostMessageW(chatroom_hwnd, WM_CLOSE, 0, 0) };
             thread::sleep(Duration::from_millis(200));
         }
@@ -338,6 +428,16 @@ mod imp {
         if kt == 0 {
             return None;
         }
+
+        // Remember which chatroom windows already exist so we don't confuse
+        // a pre-existing one with the one we're about to open.
+        let before: std::collections::HashSet<HWND> = {
+            let pid = pid_of(kt);
+            enum_windows_for_pid(pid)
+                .into_iter()
+                .filter(|&h| h != kt && find_window_ex(h, 0, Some("RICHEDIT50W"), None) != 0)
+                .collect()
+        };
 
         let main_view = find_window_ex(kt, 0, Some("EVA_ChildWindow"), None);
         if main_view == 0 {
@@ -368,7 +468,29 @@ mod imp {
         }
         thread::sleep(Duration::from_millis(2500));
 
-        let chatroom_hwnd = unsafe { GetForegroundWindow() };
+        // Find the chatroom: enumerate KakaoTalk's windows and pick the NEW
+        // one that has a RICHEDIT50W child.  This works regardless of which
+        // window has foreground focus.
+        let pid = pid_of(kt);
+        let mut chatroom_hwnd: HWND = 0;
+        let windows = enum_windows_for_pid(pid);
+        for hwnd in windows {
+            if hwnd == kt || before.contains(&hwnd) {
+                continue;
+            }
+            if find_window_ex(hwnd, 0, Some("RICHEDIT50W"), None) != 0 {
+                chatroom_hwnd = hwnd;
+                break;
+            }
+        }
+
+        // Fallback: if no NEW chatroom appeared, maybe the search opened an
+        // existing chatroom window (already in `before`).  Pick any chatroom
+        // that isn't the main window.
+        if chatroom_hwnd == 0 {
+            chatroom_hwnd = find_chatroom_hwnd(kt);
+        }
+
         Some((search_box, kt, chatroom_hwnd))
     }
 
@@ -397,6 +519,12 @@ mod imp {
             return false;
         }
 
+        // Acquire foreground focus ONCE before the content loop.
+        // Calling force_foreground per-block would send repeated Alt
+        // keypresses that activate KakaoTalk's menu bar and steal focus
+        // away from the input box.
+        force_foreground(hwnd, input_box);
+
         let mut ok = true;
         for item in contents {
             match item {
@@ -406,7 +534,8 @@ mod imp {
                         ok = false;
                         break;
                     }
-                    paste_and_send(hwnd, input_box, 0.2, 0.5);
+                    // clipboard set → Ctrl+V immediately (no delay between)
+                    paste_and_send(0.3, 0.5);
                 }
                 Content::Image(path) => {
                     let size_mb = match Path::new(path).metadata() {
@@ -417,13 +546,15 @@ mod imp {
                             break;
                         }
                     };
-                    let wait = (2.0_f32 + size_mb * 1.5).clamp(2.0, 300.0);
+                    let send_wait = (2.0_f32 + size_mb * 1.5).clamp(2.0, 300.0);
                     if let Err(e) = set_clipboard_image(path) {
                         eprintln!("[send_to_chatroom] clipboard image error: {e}");
                         ok = false;
                         break;
                     }
-                    paste_and_send(hwnd, input_box, 0.2, wait);
+                    // Images need more time between Ctrl+V and Enter for
+                    // KakaoTalk to render the preview in the input box.
+                    paste_and_send(1.0, send_wait);
                 }
             }
         }

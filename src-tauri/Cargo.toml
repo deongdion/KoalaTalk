@@ -28,3 +28,23 @@ rand = "0.8"
 kakaotalk = { path = "../kakaotalk" }
 tauri-plugin-dialog = "2.7.0"
 
+# Keep kakaotalk crate optimised even in dev builds — find_tokens() scans
+# hundreds of MB of process memory with regex; without optimisation the
+# regex engine has no SIMD and is orders of magnitude slower.
+[profile.dev.package.kakaotalk]
+opt-level = 3
+
+[profile.dev.package.regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3
+
+[profile.dev.package.aho-corasick]
+opt-level = 3
+
+[profile.dev.package.memchr]
+opt-level = 3
