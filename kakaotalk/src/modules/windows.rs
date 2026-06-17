@@ -46,7 +46,7 @@ mod imp {
         PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
+        keybd_event, GetFocus, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, FindWindowExW, FindWindowW, GetWindow, GetWindowThreadProcessId,
@@ -298,21 +298,33 @@ mod imp {
     /// Route keyboard focus to `target` (the RICHEDIT50W input box) inside
     /// `hwnd` (the chatroom window).
     ///
-    /// KakaoTalk is already the foreground app after open_chatroom returns, so
-    /// we only need to point its thread's focus at the input box.  Attempting
-    /// SetForegroundWindow / SystemParametersInfo here caused side-effects
-    /// (WM_SETTINGCHANGE broadcast disturbing KakaoTalk focus, wrong windows
-    /// being activated) that dropped the first message block on 2nd+ channels.
+    /// On channel 1 the chatroom starts behind KoalaTalk, so the first
+    /// SetFocus triggers a cross-process window activation that brings it to
+    /// the front and naturally lands focus on input_box.  On channel 2+ the
+    /// chatroom is already foreground, so there is no activation event and
+    /// KakaoTalk may briefly place focus elsewhere (scroll area, header) after
+    /// the chatroom opens.  We verify with GetFocus and retry until input_box
+    /// actually holds focus before proceeding to paste.
     fn set_input_focus(hwnd: HWND, target: HWND) {
-        unsafe {
-            ShowWindow(hwnd, SW_RESTORE);
-            let cur_tid = GetCurrentThreadId();
-            let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
-            AttachThreadInput(cur_tid, tgt_tid, 1);
-            SetFocus(target);
-            AttachThreadInput(cur_tid, tgt_tid, 0);
+        unsafe { ShowWindow(hwnd, SW_RESTORE); }
+
+        for _ in 0..6 {
+            let focused = unsafe {
+                let cur_tid = GetCurrentThreadId();
+                let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
+                AttachThreadInput(cur_tid, tgt_tid, 1);
+                SetFocus(target);
+                let f = GetFocus();
+                AttachThreadInput(cur_tid, tgt_tid, 0);
+                f
+            };
+            if focused == target {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
         }
-        thread::sleep(Duration::from_millis(200));
+        // Brief settle after focus is confirmed.
+        thread::sleep(Duration::from_millis(150));
     }
 
     /// Ctrl+V then Enter.  Assumes the chatroom already has foreground focus
