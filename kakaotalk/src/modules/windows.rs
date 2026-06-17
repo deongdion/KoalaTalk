@@ -46,7 +46,7 @@ mod imp {
         PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN,
+        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow,
@@ -317,12 +317,6 @@ mod imp {
                 SetFocus(target);
                 AttachThreadInput(cur_tid, tgt_tid, 0);
 
-                // Cancel any menu-bar activation that the Alt press may have
-                // triggered in KakaoTalk (e.g. on 2nd+ channel the app is
-                // already active and the Alt key highlights its menu bar).
-                // Escape dismisses it without affecting the chat input.
-                keybd_event(VK_ESCAPE as u8, 0, 0, 0);
-                keybd_event(VK_ESCAPE as u8, 0, KEYEVENTF_KEYUP, 0);
             }
             thread::sleep(Duration::from_millis(150));
 
