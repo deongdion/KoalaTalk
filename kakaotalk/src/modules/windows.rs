@@ -42,16 +42,15 @@ mod imp {
         MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
     };
     use windows_sys::Win32::System::Threading::{
-        AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_VM_OPERATION,
-        PROCESS_VM_WRITE,
+        OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, GetFocus, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
+        keybd_event, KEYEVENTF_KEYUP, VK_CONTROL,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, FindWindowExW, FindWindowW, GetWindow, GetWindowThreadProcessId,
-        IsWindowVisible, PostMessageW, SendMessageW, ShowWindow, GW_CHILD, SW_RESTORE,
-        WM_CLOSE, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
+        IsWindowVisible, PostMessageW, SendMessageW, GW_CHILD, WM_CLOSE, WM_DROPFILES,
+        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
     };
 
     type HGlobal = *mut c_void;
@@ -295,57 +294,30 @@ mod imp {
         Ok(())
     }
 
-    /// Route keyboard focus to `target` (the RICHEDIT50W input box) inside
-    /// `hwnd` (the chatroom window).
+    /// Send Ctrl+V then Enter directly to `hwnd` (the chatroom window) via
+    /// PostMessageW — no keyboard focus or foreground state required.
     ///
-    /// On channel 1 the chatroom starts behind KoalaTalk, so the first
-    /// SetFocus triggers a cross-process window activation that brings it to
-    /// the front and naturally lands focus on input_box.  On channel 2+ the
-    /// chatroom is already foreground, so there is no activation event and
-    /// KakaoTalk may briefly place focus elsewhere (scroll area, header) after
-    /// the chatroom opens.  We verify with GetFocus and retry until input_box
-    /// actually holds focus before proceeding to paste.
-    fn set_input_focus(hwnd: HWND, target: HWND) {
-        unsafe { ShowWindow(hwnd, SW_RESTORE); }
-
-        // Attach to the thread that owns `target` (not necessarily the same
-        // thread as the chatroom top-level window — KakaoTalk may host the
-        // RICHEDIT50W on a different UI thread).
-        let cur_tid = unsafe { GetCurrentThreadId() };
-        let tgt_tid = unsafe { GetWindowThreadProcessId(target, ptr::null_mut()) };
-
-        for _ in 0..6 {
-            let focused = unsafe {
-                AttachThreadInput(cur_tid, tgt_tid, 1);
-                SetFocus(target);
-                let f = GetFocus();
-                AttachThreadInput(cur_tid, tgt_tid, 0);
-                f
-            };
-            if focused == target {
-                break;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        thread::sleep(Duration::from_millis(150));
-    }
-
-    /// Ctrl+V then Enter.  Assumes the chatroom already has foreground focus
-    /// (caller must have called `force_foreground` once before the loop).
-    fn paste_and_send(wait_after_paste: f32, wait_after_send: f32) {
+    /// We use `keybd_event` only to press/release VK_CONTROL globally so that
+    /// `GetKeyState(VK_CONTROL)` returns "pressed" when KakaoTalk processes
+    /// the WM_KEYDOWN 'V' we post.  The 'V' and Enter messages themselves go
+    /// straight to the chatroom window's message queue, bypassing the focus
+    /// routing that caused the first-block-dropped problem.
+    fn paste_and_send(hwnd: HWND, wait_after_paste: f32, wait_after_send: f32) {
         unsafe {
+            // Ctrl down (updates global key state only — goes to whatever is
+            // currently focused but that doesn't matter for our purposes)
             keybd_event(VK_CONTROL as u8, 0, 0, 0);
-            keybd_event(b'V', 0, 0, 0);
-            thread::sleep(Duration::from_millis(50));
-            keybd_event(b'V', 0, KEYEVENTF_KEYUP, 0);
+            // Post 'V' directly to the chatroom window
+            PostMessageW(hwnd, WM_KEYDOWN, b'V' as WPARAM, 0x0000_0001);
+            thread::sleep(Duration::from_millis(30));
+            PostMessageW(hwnd, WM_KEYUP,   b'V' as WPARAM, 0xC000_0001);
             keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
         }
         thread::sleep(Duration::from_secs_f32(wait_after_paste));
-
         unsafe {
-            keybd_event(VK_RETURN as u8, 0, 0, 0);
-            thread::sleep(Duration::from_millis(50));
-            keybd_event(VK_RETURN as u8, 0, KEYEVENTF_KEYUP, 0);
+            PostMessageW(hwnd, WM_KEYDOWN, 0x0D /* VK_RETURN */, 0x0000_0001);
+            thread::sleep(Duration::from_millis(30));
+            PostMessageW(hwnd, WM_KEYUP,   0x0D /* VK_RETURN */, 0xC000_0001);
         }
         thread::sleep(Duration::from_secs_f32(wait_after_send));
     }
@@ -463,9 +435,9 @@ mod imp {
         unsafe { SendMessageW(search_box, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM) };
         thread::sleep(Duration::from_millis(1500));
         unsafe {
-            PostMessageW(search_box, WM_KEYDOWN, VK_RETURN as WPARAM, 0);
+            PostMessageW(search_box, WM_KEYDOWN, 0x0D /* VK_RETURN */, 0);
             thread::sleep(Duration::from_millis(50));
-            PostMessageW(search_box, WM_KEYUP, VK_RETURN as WPARAM, 0);
+            PostMessageW(search_box, WM_KEYUP,   0x0D /* VK_RETURN */, 0);
         }
         let wait_ms = ((window_open_secs * 1000.0) as u64).max(500);
         thread::sleep(Duration::from_millis(wait_ms));
@@ -516,16 +488,14 @@ mod imp {
             return false;
         }
 
+        // We no longer need keyboard focus — paste_and_send posts messages
+        // directly to `hwnd` (the chatroom window), bypassing focus routing.
+        // The RICHEDIT50W child is only needed to confirm the chatroom is valid.
         let input_box = find_window_ex(hwnd, 0, Some("RICHEDIT50W"), None);
         if input_box == 0 {
             cleanup(search_box, kt_hwnd, chatroom_hwnd);
             return false;
         }
-
-        // Point KakaoTalk's thread focus at the input box.  KakaoTalk is
-        // already the foreground app after open_chatroom, so we only need
-        // SetFocus (via AttachThreadInput) — no SetForegroundWindow.
-        set_input_focus(hwnd, input_box);
 
         let mut ok = true;
         for item in contents {
@@ -536,8 +506,7 @@ mod imp {
                         ok = false;
                         break;
                     }
-                    // clipboard set → Ctrl+V immediately (no delay between)
-                    paste_and_send(paste_delay_secs, 0.5);
+                    paste_and_send(hwnd, paste_delay_secs, 0.5);
                 }
                 Content::Image(path) => {
                     let size_mb = match Path::new(path).metadata() {
@@ -554,9 +523,7 @@ mod imp {
                         ok = false;
                         break;
                     }
-                    // Images need more time between Ctrl+V and Enter for
-                    // KakaoTalk to render the preview in the input box.
-                    paste_and_send((paste_delay_secs + 0.5).max(1.0), send_wait);
+                    paste_and_send(hwnd, (paste_delay_secs + 0.5).max(1.0), send_wait);
                 }
             }
         }
