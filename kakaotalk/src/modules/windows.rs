@@ -308,10 +308,14 @@ mod imp {
     fn set_input_focus(hwnd: HWND, target: HWND) {
         unsafe { ShowWindow(hwnd, SW_RESTORE); }
 
+        // Attach to the thread that owns `target` (not necessarily the same
+        // thread as the chatroom top-level window — KakaoTalk may host the
+        // RICHEDIT50W on a different UI thread).
+        let cur_tid = unsafe { GetCurrentThreadId() };
+        let tgt_tid = unsafe { GetWindowThreadProcessId(target, ptr::null_mut()) };
+
         for _ in 0..6 {
             let focused = unsafe {
-                let cur_tid = GetCurrentThreadId();
-                let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
                 AttachThreadInput(cur_tid, tgt_tid, 1);
                 SetFocus(target);
                 let f = GetFocus();
@@ -323,7 +327,6 @@ mod imp {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        // Brief settle after focus is confirmed.
         thread::sleep(Duration::from_millis(150));
     }
 
