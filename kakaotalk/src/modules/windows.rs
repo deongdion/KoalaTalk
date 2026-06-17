@@ -46,7 +46,7 @@ mod imp {
         PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_RETURN,
+        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow,
@@ -316,6 +316,13 @@ mod imp {
                 SetForegroundWindow(hwnd);
                 SetFocus(target);
                 AttachThreadInput(cur_tid, tgt_tid, 0);
+
+                // Cancel any menu-bar activation that the Alt press may have
+                // triggered in KakaoTalk (e.g. on 2nd+ channel the app is
+                // already active and the Alt key highlights its menu bar).
+                // Escape dismisses it without affecting the chat input.
+                keybd_event(VK_ESCAPE as u8, 0, 0, 0);
+                keybd_event(VK_ESCAPE as u8, 0, KEYEVENTF_KEYUP, 0);
             }
             thread::sleep(Duration::from_millis(150));
 
@@ -527,6 +534,14 @@ mod imp {
         // keypresses that activate KakaoTalk's menu bar and steal focus
         // away from the input box.
         force_foreground(hwnd, input_box);
+        // Extra settling time: on the 2nd+ channel the chatroom window is
+        // already part of a running KakaoTalk process, and the Alt-key trick
+        // inside force_foreground can briefly put KakaoTalk into its menu
+        // activation mode (~200 ms).  Without this pause the very first
+        // keybd_event fires while focus is still in transition and the first
+        // content block gets swallowed.  Subsequent blocks are fine because
+        // the wait_after_paste / wait_after_send delays give enough time.
+        thread::sleep(Duration::from_millis(400));
 
         let mut ok = true;
         for item in contents {
