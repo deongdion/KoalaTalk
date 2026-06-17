@@ -184,12 +184,12 @@ impl Channel {
         self.consult
     }
 
-    pub fn send(&self, contents: &[Content]) -> bool {
+    pub fn send(&self, contents: &[Content], window_open_secs: f32, paste_delay_secs: f32) -> bool {
         use crate::modules::windows::{open_chatroom, send_to_chatroom};
 
-        match open_chatroom(&self.title) {
+        match open_chatroom(&self.title, window_open_secs) {
             Some((search_box, kt_hwnd, chatroom_hwnd)) => {
-                send_to_chatroom(&self.title, contents, search_box, kt_hwnd, chatroom_hwnd)
+                send_to_chatroom(&self.title, contents, search_box, kt_hwnd, chatroom_hwnd, paste_delay_secs)
             }
             None => false,
         }

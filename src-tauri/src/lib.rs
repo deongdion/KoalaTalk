@@ -52,6 +52,10 @@ pub struct DelaysDto {
     pub send_min: f32,
     #[serde(rename = "sendMaxSec", default)]
     pub send_max: f32,
+    #[serde(rename = "windowOpenSec", default)]
+    pub window_open: f32,
+    #[serde(rename = "pasteDelaySec", default)]
+    pub paste_delay: f32,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -483,9 +487,13 @@ async fn process_channel(
     let title = ch.title.clone();
     let ch_clone = ch.clone();
     let contents_clone = contents.to_vec();
-    let ok = tokio::task::spawn_blocking(move || ch_clone.send(&contents_clone))
-        .await
-        .unwrap_or(false);
+    let window_open = delays.window_open;
+    let paste_delay = delays.paste_delay;
+    let ok = tokio::task::spawn_blocking(move || {
+        ch_clone.send(&contents_clone, window_open, paste_delay)
+    })
+    .await
+    .unwrap_or(false);
 
     if ok {
         emit_log(app, LogLevel::Ok, format!("{}: 메시지 {}개 전송 완료.", title, contents.len()));

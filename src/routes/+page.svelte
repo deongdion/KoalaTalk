@@ -1107,6 +1107,34 @@
 			</p>
 		</div>
 
+		<div class="grid gap-2">
+			<label for="window-open" class="text-sm font-medium">채팅방 열기 대기 (초)</label>
+			<Input
+				id="window-open"
+				type="number"
+				min={0.5}
+				step={0.5}
+				bind:value={settings.delays.windowOpenSec}
+			/>
+			<p class="text-[11px] text-muted-foreground">
+				채널 검색 후 채팅방이 열릴 때까지 기다리는 시간. 느린 PC에서는 값을 높이세요. (기본 2.5초)
+			</p>
+		</div>
+
+		<div class="grid gap-2">
+			<label for="paste-delay" class="text-sm font-medium">붙여넣기 후 전송 대기 (초)</label>
+			<Input
+				id="paste-delay"
+				type="number"
+				min={0.1}
+				step={0.1}
+				bind:value={settings.delays.pasteDelaySec}
+			/>
+			<p class="text-[11px] text-muted-foreground">
+				Ctrl+V 후 Enter를 누르기 전 대기. 느린 PC에서는 값을 높이세요. (기본 0.5초)
+			</p>
+		</div>
+
 		<div class="flex items-start gap-3 rounded-md border p-3">
 			<Checkbox bind:checked={settings.dedupe} class="mt-0.5" />
 			<button

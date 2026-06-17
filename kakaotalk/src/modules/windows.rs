@@ -4,7 +4,7 @@
 use crate::models::content::Content;
 
 #[cfg(not(windows))]
-pub fn open_chatroom(_title: &str) -> Option<(isize, isize, isize)> {
+pub fn open_chatroom(_title: &str, _window_open_secs: f32) -> Option<(isize, isize, isize)> {
     None
 }
 
@@ -15,6 +15,7 @@ pub fn send_to_chatroom(
     _search_box: isize,
     _kt_hwnd: isize,
     _chatroom_hwnd: isize,
+    _paste_delay_secs: f32,
 ) -> bool {
     false
 }
@@ -423,7 +424,7 @@ mod imp {
         }
     }
 
-    pub fn open_chatroom(title: &str) -> Option<(isize, isize, isize)> {
+    pub fn open_chatroom(title: &str, window_open_secs: f32) -> Option<(isize, isize, isize)> {
         let kt = find_window(None, Some("카카오톡"));
         if kt == 0 {
             return None;
@@ -466,7 +467,8 @@ mod imp {
             thread::sleep(Duration::from_millis(50));
             PostMessageW(search_box, WM_KEYUP, VK_RETURN as WPARAM, 0);
         }
-        thread::sleep(Duration::from_millis(2500));
+        let wait_ms = ((window_open_secs * 1000.0) as u64).max(500);
+        thread::sleep(Duration::from_millis(wait_ms));
 
         // Find the chatroom: enumerate KakaoTalk's windows and pick the NEW
         // one that has a RICHEDIT50W child.  This works regardless of which
@@ -500,6 +502,7 @@ mod imp {
         search_box: isize,
         kt_hwnd: isize,
         chatroom_hwnd: isize,
+        paste_delay_secs: f32,
     ) -> bool {
         let mut hwnd: HWND = chatroom_hwnd;
         if hwnd == 0 {
@@ -535,7 +538,7 @@ mod imp {
                         break;
                     }
                     // clipboard set → Ctrl+V immediately (no delay between)
-                    paste_and_send(0.3, 0.5);
+                    paste_and_send(paste_delay_secs, 0.5);
                 }
                 Content::Image(path) => {
                     let size_mb = match Path::new(path).metadata() {
@@ -554,7 +557,7 @@ mod imp {
                     }
                     // Images need more time between Ctrl+V and Enter for
                     // KakaoTalk to render the preview in the input box.
-                    paste_and_send(1.0, send_wait);
+                    paste_and_send((paste_delay_secs + 0.5).max(1.0), send_wait);
                 }
             }
         }

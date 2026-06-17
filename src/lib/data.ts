@@ -26,6 +26,8 @@ export type Delays = {
 	addMaxSec: number;
 	sendMinSec: number;
 	sendMaxSec: number;
+	windowOpenSec: number;
+	pasteDelaySec: number;
 };
 
 export type Settings = {
@@ -37,7 +39,9 @@ export const defaultDelays: Delays = {
 	addMinSec: 1.5,
 	addMaxSec: 3,
 	sendMinSec: 0.5,
-	sendMaxSec: 1.5
+	sendMaxSec: 1.5,
+	windowOpenSec: 2.5,
+	pasteDelaySec: 0.5
 };
 
 export const defaultSettings: Settings = {
