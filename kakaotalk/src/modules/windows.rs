@@ -46,13 +46,13 @@ mod imp {
         PROCESS_VM_WRITE,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_RETURN,
+        keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow,
         GetWindow, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SendMessageW,
-        SetForegroundWindow, ShowWindow, GW_CHILD, SW_RESTORE, WM_CLOSE, WM_DROPFILES,
-        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
+        SetForegroundWindow, ShowWindow, SystemParametersInfoW, GW_CHILD, SW_RESTORE,
+        WM_CLOSE, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
     };
 
     type HGlobal = *mut c_void;
@@ -298,15 +298,26 @@ mod imp {
 
     /// Aggressively bring `hwnd` to the foreground and set keyboard focus
     /// on `target`.  Retries once if the first attempt fails.
+    ///
+    /// Uses `SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0)` to
+    /// temporarily lift the foreground lock so `SetForegroundWindow` succeeds
+    /// from a background thread — avoids injecting Alt keypresses that were
+    /// causing KakaoTalk to open menus / panels on the 2nd+ channel.
     fn force_foreground(hwnd: HWND, target: HWND) {
+        // SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+        // SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+        // SPIF_SENDCHANGE              = 0x0002
+        let old_timeout = unsafe {
+            let mut t: u32 = 0;
+            SystemParametersInfoW(0x2000, 0, &mut t as *mut u32 as *mut _, 0);
+            t
+        };
+        unsafe {
+            SystemParametersInfoW(0x2001, 0, ptr::null_mut(), 0x0002);
+        }
+
         for attempt in 0..2 {
             unsafe {
-                // Alt-key trick: Windows lets a thread call SetForegroundWindow
-                // only while processing input — a synthetic Alt press satisfies
-                // that requirement.
-                keybd_event(VK_MENU as u8, 0, 0, 0);
-                keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
-
                 ShowWindow(hwnd, SW_RESTORE);
                 BringWindowToTop(hwnd);
 
@@ -316,18 +327,22 @@ mod imp {
                 SetForegroundWindow(hwnd);
                 SetFocus(target);
                 AttachThreadInput(cur_tid, tgt_tid, 0);
-
             }
             thread::sleep(Duration::from_millis(150));
 
             // Verify
             let fg = unsafe { GetForegroundWindow() };
             if fg == hwnd {
-                return;
+                break;
             }
             if attempt == 0 {
                 thread::sleep(Duration::from_millis(200));
             }
+        }
+
+        // Restore the original lock timeout
+        unsafe {
+            SystemParametersInfoW(0x2001, 0, old_timeout as usize as *mut _, 0x0002);
         }
     }
 
