@@ -49,9 +49,8 @@ mod imp {
         keybd_event, SetFocus, KEYEVENTF_KEYUP, VK_CONTROL, VK_RETURN,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow,
-        GetWindow, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SendMessageW,
-        SetForegroundWindow, ShowWindow, SystemParametersInfoW, GW_CHILD, SW_RESTORE,
+        EnumWindows, FindWindowExW, FindWindowW, GetWindow, GetWindowThreadProcessId,
+        IsWindowVisible, PostMessageW, SendMessageW, ShowWindow, GW_CHILD, SW_RESTORE,
         WM_CLOSE, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
     };
 
@@ -296,54 +295,24 @@ mod imp {
         Ok(())
     }
 
-    /// Aggressively bring `hwnd` to the foreground and set keyboard focus
-    /// on `target`.  Retries once if the first attempt fails.
+    /// Route keyboard focus to `target` (the RICHEDIT50W input box) inside
+    /// `hwnd` (the chatroom window).
     ///
-    /// Uses `SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0)` to
-    /// temporarily lift the foreground lock so `SetForegroundWindow` succeeds
-    /// from a background thread — avoids injecting Alt keypresses that were
-    /// causing KakaoTalk to open menus / panels on the 2nd+ channel.
-    fn force_foreground(hwnd: HWND, target: HWND) {
-        // SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
-        // SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
-        // SPIF_SENDCHANGE              = 0x0002
-        let old_timeout = unsafe {
-            let mut t: u32 = 0;
-            SystemParametersInfoW(0x2000, 0, &mut t as *mut u32 as *mut _, 0);
-            t
-        };
+    /// KakaoTalk is already the foreground app after open_chatroom returns, so
+    /// we only need to point its thread's focus at the input box.  Attempting
+    /// SetForegroundWindow / SystemParametersInfo here caused side-effects
+    /// (WM_SETTINGCHANGE broadcast disturbing KakaoTalk focus, wrong windows
+    /// being activated) that dropped the first message block on 2nd+ channels.
+    fn set_input_focus(hwnd: HWND, target: HWND) {
         unsafe {
-            SystemParametersInfoW(0x2001, 0, ptr::null_mut(), 0x0002);
+            ShowWindow(hwnd, SW_RESTORE);
+            let cur_tid = GetCurrentThreadId();
+            let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
+            AttachThreadInput(cur_tid, tgt_tid, 1);
+            SetFocus(target);
+            AttachThreadInput(cur_tid, tgt_tid, 0);
         }
-
-        for attempt in 0..2 {
-            unsafe {
-                ShowWindow(hwnd, SW_RESTORE);
-                BringWindowToTop(hwnd);
-
-                let cur_tid = GetCurrentThreadId();
-                let tgt_tid = GetWindowThreadProcessId(hwnd, ptr::null_mut());
-                AttachThreadInput(cur_tid, tgt_tid, 1);
-                SetForegroundWindow(hwnd);
-                SetFocus(target);
-                AttachThreadInput(cur_tid, tgt_tid, 0);
-            }
-            thread::sleep(Duration::from_millis(150));
-
-            // Verify
-            let fg = unsafe { GetForegroundWindow() };
-            if fg == hwnd {
-                break;
-            }
-            if attempt == 0 {
-                thread::sleep(Duration::from_millis(200));
-            }
-        }
-
-        // Restore the original lock timeout
-        unsafe {
-            SystemParametersInfoW(0x2001, 0, old_timeout as usize as *mut _, 0x0002);
-        }
+        thread::sleep(Duration::from_millis(200));
     }
 
     /// Ctrl+V then Enter.  Assumes the chatroom already has foreground focus
@@ -538,19 +507,10 @@ mod imp {
             return false;
         }
 
-        // Acquire foreground focus ONCE before the content loop.
-        // Calling force_foreground per-block would send repeated Alt
-        // keypresses that activate KakaoTalk's menu bar and steal focus
-        // away from the input box.
-        force_foreground(hwnd, input_box);
-        // Extra settling time: on the 2nd+ channel the chatroom window is
-        // already part of a running KakaoTalk process, and the Alt-key trick
-        // inside force_foreground can briefly put KakaoTalk into its menu
-        // activation mode (~200 ms).  Without this pause the very first
-        // keybd_event fires while focus is still in transition and the first
-        // content block gets swallowed.  Subsequent blocks are fine because
-        // the wait_after_paste / wait_after_send delays give enough time.
-        thread::sleep(Duration::from_millis(400));
+        // Point KakaoTalk's thread focus at the input box.  KakaoTalk is
+        // already the foreground app after open_chatroom, so we only need
+        // SetFocus (via AttachThreadInput) — no SetForegroundWindow.
+        set_input_focus(hwnd, input_box);
 
         let mut ok = true;
         for item in contents {
