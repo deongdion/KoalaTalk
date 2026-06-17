@@ -48,9 +48,10 @@ mod imp {
         keybd_event, KEYEVENTF_KEYUP, VK_CONTROL,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowExW, FindWindowW, GetWindow, GetWindowThreadProcessId,
-        IsWindowVisible, PostMessageW, SendMessageW, GW_CHILD, WM_CLOSE, WM_DROPFILES,
-        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_SETTEXT,
+        BringWindowToTop, EnumWindows, FindWindowExW, FindWindowW, GetWindow,
+        GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SendMessageW, ShowWindow,
+        GW_CHILD, SW_RESTORE, WM_CLOSE, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_SETTEXT,
     };
 
     type HGlobal = *mut c_void;
@@ -401,6 +402,16 @@ mod imp {
         if kt == 0 {
             return None;
         }
+
+        // Bring the KakaoTalk main window to the foreground so that when we
+        // press Enter in the search box the chatroom tab opens on top.
+        // BringWindowToTop activates the window without needing foreground
+        // privileges from our side.
+        unsafe {
+            ShowWindow(kt, SW_RESTORE);
+            BringWindowToTop(kt);
+        }
+        thread::sleep(Duration::from_millis(300));
 
         // Remember which chatroom windows already exist so we don't confuse
         // a pre-existing one with the one we're about to open.
